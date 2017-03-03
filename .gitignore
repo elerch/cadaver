@@ -1,4 +1,5 @@
 cadaver
+*.swp
 
 # Prerequisites
 *.d
