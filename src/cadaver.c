@@ -98,6 +98,7 @@ struct session session;
 ne_ssl_client_cert *client_cert;
 
 int tolerant; /* tolerate DAV-enabledness failure */
+int insecure; /* allow insecure SSL communication */
 
 /* Current output state */
 static enum out_state {
@@ -211,7 +212,9 @@ tmp = ne_ssl_readable_dname(dn); printf(str, tmp); free(tmp)
 
     ne_ssl_cert_validity(c, from, to);
     printf(_("Certificate is valid from %s to %s\n"), from, to);
-
+    if (insecure) {
+        return 0;
+    }
     if (isatty(STDIN_FILENO)) {
 	printf(_("Do you wish to accept the certificate? (y/n) "));
 	return !yesno();
@@ -449,12 +452,13 @@ static void parse_args(int argc, char **argv)
 	{ 0, 0, 0, 0 }
     };
     int optc;
-    while ((optc = getopt_long(argc, argv, "ehtp:r:c:V", opts, NULL)) != -1) {
+    while ((optc = getopt_long(argc, argv, "kehtp:r:c:V", opts, NULL)) != -1) {
 	switch (optc) {
 	case 'h': usage(); exit(-1);
 	case 'V': execute_about(); exit(-1);
 	case 'p': set_proxy(optarg); break;
 	case 't': tolerant = 1; break;
+	case 'k': insecure = 1; break;
 	case 'r': rcfile = strdup(optarg); break;
 	case 'c': cmd = strdup(optarg); break;
 	case '?': 
