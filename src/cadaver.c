@@ -114,6 +114,8 @@ static enum out_state {
 
 static RETSIGTYPE quit_handler(int signo);
 
+static int execute_command(const char *line);
+
 static void notifier(void *ud, ne_session_status status, 
                      const ne_session_status_info *info);
 static void pretty_progress_bar(ne_off_t progress, ne_off_t total);
@@ -131,6 +133,7 @@ static void usage(void)
 "  -t, --tolerant            Allow cd/open into non-WebDAV enabled collection.\n"
 "  -r, --rcfile=FILE         Read script from FILE instead of ~/.cadaverrc.\n"
 "  -p, --proxy=PROXY[:PORT]  Use proxy host PROXY and optional proxy port PORT.\n"
+"  -c COMMAND                Run command and exit.\n"
 "  -V, --version             Display version information.\n"
 "  -h, --help                Display this help message.\n"
 "Please send bug reports and feature requests to <cadaver@webdav.org>\n"), progname);
@@ -441,16 +444,18 @@ static void parse_args(int argc, char **argv)
 	{ "proxy", required_argument, NULL, 'p' },
 	{ "tolerant", no_argument, NULL, 't' },
 	{ "rcfile", required_argument, NULL, 'r' },
+	{ "cmd", required_argument, NULL, 'c' },
 	{ 0, 0, 0, 0 }
     };
     int optc;
-    while ((optc = getopt_long(argc, argv, "ehtp:r:V", opts, NULL)) != -1) {
+    while ((optc = getopt_long(argc, argv, "ehtp:r:c:V", opts, NULL)) != -1) {
 	switch (optc) {
 	case 'h': usage(); exit(-1);
 	case 'V': execute_about(); exit(-1);
 	case 'p': set_proxy(optarg); break;
 	case 't': tolerant = 1; break;
 	case 'r': rcfile = strdup(optarg); break;
+	case 'c': exit(execute_command(strdup(optarg))); break;
 	case '?': 
 	default:
 	    printf(_("Try `%s --help' for more information.\n"), progname);
