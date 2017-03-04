@@ -1,6 +1,6 @@
 /* 
    socket handling interface
-   Copyright (C) 1999-2009, Joe Orton <joe@manyfish.co.uk>
+   Copyright (C) 1999-2010, Joe Orton <joe@manyfish.co.uk>
 
    This library is free software; you can redistribute it and/or
    modify it under the terms of the GNU Library General Public
@@ -62,9 +62,11 @@ int ne_sock_init(void);
  * times to ne_sock_init() for the process. */
 void ne_sock_exit(void);
 
-/* Resolve the given hostname.  'flags' must be zero.  Hex
- * string IPv6 addresses (e.g. `::1') may be enclosed in brackets
- * (e.g. `[::1]'). */
+#define NE_ADDR_CANON (0x01)
+/* Resolve the given hostname. Hex string IPv6 addresses (e.g. `::1')
+ * may be enclosed in brackets (e.g. `[::1]').  'flags' should be
+ * zero, or if NE_ADDR_CANON is passed, the canonical name for the
+ * hostname will be determind. */
 ne_sock_addr *ne_addr_resolve(const char *hostname, int flags);
 
 /* Returns zero if name resolution was successful, non-zero on
@@ -87,6 +89,11 @@ const ne_inet_addr *ne_addr_next(ne_sock_addr *addr);
 /* If name resolution fails, copies the error string into 'buffer',
  * which is of size 'bufsiz'.  'buffer' is returned. */
 char *ne_addr_error(const ne_sock_addr *addr, char *buffer, size_t bufsiz);
+
+/* Returns the canonical name of the host as a NUL-terminated string,
+ * if NE_ADDR_CANON was used, and name resolution was successful.
+ * Otherwise, returns NULL. */
+const char *ne_addr_canonical(const ne_sock_addr *addr);
 
 /* Destroys an address object created by ne_addr_resolve. */
 void ne_addr_destroy(ne_sock_addr *addr);
@@ -219,8 +226,10 @@ int ne_sock_fd(const ne_socket *sock);
  * must be destroyed by caller using ne_iaddr_free. */
 ne_inet_addr *ne_sock_peer(ne_socket *sock, unsigned int *port);
 
-/* Close the socket and destroy the socket object.  Returns zero on
- * success, or an errno value if close() failed. */
+/* Close the socket and destroy the socket object.  If SSL is in use
+ * for the socket, a closure alert is sent to initiate a clean
+ * shutdown, but this function does not wait for the peer's response.
+ * Returns zero on success, or non-zero on failure. */
 int ne_sock_close(ne_socket *sock);
 
 /* Return current error string for socket. */

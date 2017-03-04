@@ -1,6 +1,6 @@
 /* 
    HTTP Authentication routines
-   Copyright (C) 1999-2009, Joe Orton <joe@manyfish.co.uk>
+   Copyright (C) 1999-2011, Joe Orton <joe@manyfish.co.uk>
 
    This library is free software; you can redistribute it and/or
    modify it under the terms of the GNU Library General Public
@@ -46,7 +46,12 @@
 #ifdef HAVE_OPENSSL
 #include <openssl/rand.h>
 #elif defined(HAVE_GNUTLS)
+#include <gnutls/gnutls.h>
+#if LIBGNUTLS_VERSION_NUMBER < 0x020b00
 #include <gcrypt.h>
+#else
+#include <gnutls/crypto.h>
+#endif
 #endif
 
 #include <errno.h>
@@ -176,6 +181,7 @@ typedef struct {
     /* This is used for SSPI (Negotiate/NTLM) auth */
     char *sspi_token;
     void *sspi_context;
+    char *sspi_host;
 #endif
 #ifdef HAVE_NTLM
      /* This is used for NTLM auth */
@@ -294,6 +300,8 @@ static void clean_session(auth_session *sess)
     sess->sspi_token = NULL;
     ne_sspi_destroy_context(sess->sspi_context);
     sess->sspi_context = NULL;
+    if (sess->sspi_host) ne_free(sess->sspi_host);
+    sess->sspi_host = NULL;
 #endif
 #ifdef HAVE_NTLM
     if (sess->ntlm_context) {
@@ -316,12 +324,16 @@ static char *get_cnonce(void)
 
 #ifdef HAVE_GNUTLS
     if (1) {
+#if LIBGNUTLS_VERSION_NUMBER < 0x020b00
         gcry_create_nonce(data, sizeof data);
+#else
+        gnutls_rnd(GNUTLS_RND_NONCE, data, sizeof data);
+#endif
         ne_md5_process_bytes(data, sizeof data, hash);
     }
     else
 #elif defined(HAVE_OPENSSL)
-    if (RAND_status() == 1 && RAND_pseudo_bytes(data, sizeof data) >= 0) {
+    if (RAND_status() == 1 && RAND_bytes(data, sizeof data) >= 0) {
 	ne_md5_process_bytes(data, sizeof data, hash);
     } 
     else 
@@ -567,7 +579,7 @@ static int verify_negotiate_response(struct auth_request *req, auth_session *ses
     int ret;
     ne_buffer *errmsg = NULL;
 
-    if (strncmp(hdr, "Negotiate", ptr - duphdr) != 0) {
+    if (!ptr || strncmp(hdr, "Negotiate", ptr - duphdr) != 0) {
         ne_set_error(sess->sess, _("Negotiate response verification failed: "
                                    "invalid response header token"));
         ne_free(duphdr);
@@ -604,7 +616,38 @@ static int verify_negotiate_response(struct auth_request *req, auth_session *ses
 #ifdef HAVE_SSPI
 static char *request_sspi(auth_session *sess, struct auth_request *request) 
 {
-    return ne_concat(sess->protocol->name, " ", sess->sspi_token, "\r\n", NULL);
+    if (sess->sspi_token)
+        return ne_concat(sess->protocol->name, " ", sess->sspi_token, "\r\n", NULL);
+    else
+        return NULL;
+}
+
+static int continue_sspi(auth_session *sess, int ntlm, const char *hdr)
+{
+    int status;
+    char *response = NULL;
+    
+    NE_DEBUG(NE_DBG_HTTPAUTH, "auth: SSPI challenge.\n");
+    
+    if (!sess->sspi_context) {
+        status = ne_sspi_create_context(&sess->sspi_context, sess->sspi_host, ntlm);
+        if (status) {
+            return status;
+        }
+    }
+    
+    status = ne_sspi_authenticate(sess->sspi_context, hdr, &response);
+    if (status) {
+        return status;
+    }
+
+    if (response && *response) {
+        sess->sspi_token = response;
+        
+        NE_DEBUG(NE_DBG_HTTPAUTH, "auth: SSPI challenge [%s]\n", sess->sspi_token);
+    }
+
+    return 0;
 }
 
 static int sspi_challenge(auth_session *sess, int attempt,
@@ -612,36 +655,33 @@ static int sspi_challenge(auth_session *sess, int attempt,
                           ne_buffer **errmsg) 
 {
     int ntlm = ne_strcasecmp(parms->protocol->name, "NTLM") == 0;
-    int status;
-    char *response = NULL;
-    
-    NE_DEBUG(NE_DBG_HTTPAUTH, "auth: SSPI challenge.\n");
-    
-    if (!sess->sspi_context) {
-        ne_uri uri = {0};
 
-        ne_fill_server_uri(sess->sess, &uri);
-
-        status = ne_sspi_create_context(&sess->sspi_context, uri.host, ntlm);
-
-        ne_uri_free(&uri);
-
-        if (status) {
-            return status;
-        }
-    }
-    
-    status = ne_sspi_authenticate(sess->sspi_context, parms->opaque, &response);
-    if (status) {
-        return status;
-    }
-    
-    sess->sspi_token = response;
-    
-    NE_DEBUG(NE_DBG_HTTPAUTH, "auth: SSPI challenge [%s]\n", sess->sspi_token);
-    
-    return 0;
+    return continue_sspi(sess, ntlm, parms->opaque);
 }
+
+static int verify_sspi(struct auth_request *req, auth_session *sess,
+                       const char *hdr)
+{
+    int ntlm = ne_strncasecmp(hdr, "NTLM ", 5) == 0;
+    char *ptr = strchr(hdr, ' ');
+
+    if (!ptr) {
+        ne_set_error(sess->sess, _("SSPI response verification failed: "
+                                   "invalid response header token"));
+        return NE_ERROR;
+    }
+
+    while(*ptr == ' ')
+        ptr++;
+
+    if (*ptr == '\0') {
+        NE_DEBUG(NE_DBG_HTTPAUTH, "auth: No token in SSPI response!\n");
+        return NE_OK;
+    }
+
+    return continue_sspi(sess, ntlm, ptr);
+}
+
 #endif
 
 /* Parse the "domain" challenge parameter and set the domains array up
@@ -1188,7 +1228,7 @@ static const struct auth_protocol protocols[] = {
       digest_challenge, request_digest, verify_digest_response,
       0 },
 #ifdef HAVE_GSSAPI
-    { NE_AUTH_GSSAPI, 30, "Negotiate",
+    { NE_AUTH_GSSAPI_ONLY, 30, "Negotiate",
       negotiate_challenge, request_negotiate, verify_negotiate_response,
       AUTH_FLAG_OPAQUE_PARAM|AUTH_FLAG_VERIFY_NON40x|AUTH_FLAG_CONN_AUTH },
 #endif
@@ -1196,8 +1236,8 @@ static const struct auth_protocol protocols[] = {
     { NE_AUTH_NTLM, 30, "NTLM",
       sspi_challenge, request_sspi, NULL,
       AUTH_FLAG_OPAQUE_PARAM|AUTH_FLAG_VERIFY_NON40x|AUTH_FLAG_CONN_AUTH },
-    { NE_AUTH_GSSAPI, 30, "Negotiate",
-      sspi_challenge, request_sspi, NULL,
+    { NE_AUTH_SSPI, 30, "Negotiate",
+      sspi_challenge, request_sspi, verify_sspi,
       AUTH_FLAG_OPAQUE_PARAM|AUTH_FLAG_VERIFY_NON40x|AUTH_FLAG_CONN_AUTH },
 #endif
 #ifdef HAVE_NTLM
@@ -1464,6 +1504,14 @@ static int ah_post_send(ne_request *req, void *cookie, const ne_status *status)
     }
 #endif
 
+#ifdef HAVE_SSPI
+    /* whatever happens: forget the SSPI token cached thus far */
+    if (sess->sspi_token) {
+        ne_free(sess->sspi_token);
+        sess->sspi_token = NULL;
+    }
+#endif
+
     NE_DEBUG(NE_DBG_HTTPAUTH, 
 	     "ah_post_send (#%d), code is %d (want %d), %s is %s\n",
 	     areq->attempt, status->code, sess->spec->status_code, 
@@ -1497,8 +1545,10 @@ static int ah_post_send(ne_request *req, void *cookie, const ne_status *status)
                             sess->protocol 
                             && (sess->protocol->flags & AUTH_FLAG_CONN_AUTH));
     }
+
 #ifdef HAVE_SSPI
-    else if (sess->sspi_context) {
+    /* Clear the SSPI context after successful authentication. */
+    if (status->code != sess->spec->status_code && sess->sspi_context) {
         ne_sspi_clear_context(sess->sspi_context);
     }
 #endif
@@ -1560,6 +1610,11 @@ static void auth_register(ne_session *sess, int isproxy, unsigned protomask,
         /* Map NEGOTIATE to NTLM | GSSAPI. */
         protomask |= NE_AUTH_GSSAPI | NE_AUTH_NTLM;
     }
+    
+    if ((protomask & NE_AUTH_GSSAPI) == NE_AUTH_GSSAPI) {
+        /* Map GSSAPI to GSSAPI_ONLY | SSPI. */
+        protomask |= NE_AUTH_GSSAPI_ONLY | NE_AUTH_SSPI;
+    }
 
     ahs = ne_get_session_private(sess, id);
     if (ahs == NULL) {
@@ -1585,7 +1640,7 @@ static void auth_register(ne_session *sess, int isproxy, unsigned protomask,
     }
 
 #ifdef HAVE_GSSAPI
-    if ((protomask & NE_AUTH_GSSAPI) && ahs->gssname == GSS_C_NO_NAME) {
+    if ((protomask & NE_AUTH_GSSAPI_ONLY) && ahs->gssname == GSS_C_NO_NAME) {
         ne_uri uri = {0};
         
         if (isproxy)
@@ -1598,6 +1653,21 @@ static void auth_register(ne_session *sess, int isproxy, unsigned protomask,
         ne_uri_free(&uri);
     }
 #endif
+#ifdef HAVE_SSPI
+    if ((protomask & (NE_AUTH_NTLM|NE_AUTH_SSPI)) && !ahs->sspi_host) {
+        ne_uri uri = {0};
+        
+        if (isproxy)
+            ne_fill_proxy_uri(sess, &uri);
+        else
+            ne_fill_server_uri(sess, &uri);
+
+        ahs->sspi_host = uri.host;
+        uri.host = NULL;
+
+        ne_uri_free(&uri);
+    }
+#endif        
 
     /* Find the end of the handler list, and add a new one. */
     hdl = &ahs->handlers;
