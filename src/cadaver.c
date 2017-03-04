@@ -438,6 +438,7 @@ static void set_proxy(const char *str)
 
 static void parse_args(int argc, char **argv)
 {
+    char *cmd = NULL;
     static const struct option opts[] = {
 	{ "version", no_argument, NULL, 'V' },
 	{ "help", no_argument, NULL, 'h' },
@@ -455,7 +456,7 @@ static void parse_args(int argc, char **argv)
 	case 'p': set_proxy(optarg); break;
 	case 't': tolerant = 1; break;
 	case 'r': rcfile = strdup(optarg); break;
-	case 'c': exit(execute_command(strdup(optarg))); break;
+	case 'c': cmd = strdup(optarg); break;
 	case '?': 
 	default:
 	    printf(_("Try `%s --help' for more information.\n"), progname);
@@ -472,6 +473,9 @@ static void parse_args(int argc, char **argv)
 	    free(run_cmd);
 	}
 #endif
+        if (cmd != NULL) {
+            exit(execute_command(cmd));
+        }
     } else if (optind < argc) {
 	usage();
 	exit(-1);
