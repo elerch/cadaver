@@ -1,6 +1,13 @@
 cadaver
 *.swp
 
+# Generated files
+Makefile
+config.h
+config.log
+config.status
+lib/intl/Makefile
+
 # Prerequisites
 *.d
 
