@@ -52,7 +52,7 @@
 /* DON'T FORGET TO ADD A NEW COMMAND ALIAS WHEN YOU ADD A NEW COMMAND */
 enum command_id {
     cmd_ls, cmd_cd, cmd_quit, cmd_open, cmd_close, cmd_about, cmd_pwd,
-    cmd_help, cmd_put, cmd_get, cmd_mkcol, cmd_delete, cmd_move, cmd_copy, 
+    cmd_help, cmd_put, cmd_get, cmd_getall, cmd_mkcol, cmd_delete, cmd_move, cmd_copy,
     cmd_less, cmd_cat, cmd_lpwd, cmd_lcd, cmd_lls, cmd_mput, cmd_mget,
     cmd_echo, cmd_set, cmd_unset, cmd_rmcol, cmd_lock, cmd_unlock,
     cmd_steal, cmd_discover, cmd_showlocks, cmd_propedit, cmd_propnames,
@@ -153,6 +153,10 @@ void close_connection(void);
 void open_connection(const char *url);
 
 void execute_ls(const char *remote);
+char *name_from_uri(char *uri);
+void process_ls(const char *remote, int output_list,
+    void (*processor)(struct resource *res, void *processor_params),
+    void *processor_params);
 void execute_edit(const char *remote);
 
 /* Determine whether the resource is a version controlled resource 

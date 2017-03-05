@@ -80,6 +80,11 @@
 /* Local variables */
 int child_running; /* true when we have a child running */
 
+struct traverse_state {
+    int recursive;
+    char *remote_path;
+};
+
 /* Command alias mappings */
 const static struct {
     enum command_id id;
@@ -88,7 +93,7 @@ const static struct {
     /* The direct mappings */
 #define C(n) { cmd_##n, #n }
     C(ls), C(cd), C(quit), C(open), C(logout), C(close), C(set), C(unset), 
-    C(pwd), C(help), C(put), C(get), C(mkcol), C(delete), C(move), C(copy),
+    C(pwd), C(help), C(put), C(get), C(getall), C(mkcol), C(delete), C(move), C(copy),
     C(less), C(cat), C(lpwd), C(lcd), C(lls), C(echo), C(quit), C(about),
     C(mget), C(mput), C(rmcol), C(lock), C(unlock), C(discover), C(steal),
     C(chexec), C(showlocks), C(version), C(propget), C(propset), C(propdel),
@@ -109,6 +114,9 @@ C(propnames), C(edit),
 };    
 
 extern const struct command commands[]; /* prototype */
+
+static void execute_get(const char *remote, const char *local);
+static void execute_getall(const char *parm1, const char *parm2);
 
 /* Tell them we are doing 'VERB' to 'NOUN'.
  * (really 'METHOD' to 'RESOURCE' but hey.) */
@@ -941,6 +949,86 @@ char *resolve_path(const char *p, const char *filename, int iscoll)
     } while (pnt != NULL);
     return ret;    
 }
+static char *change_or_create_dir(const char *name)
+{
+    char *cwd = getcwd(NULL, 0);
+    if (cwd == NULL) {
+        perror("Error getting name of current directory: ");
+        return NULL;
+    }
+    if (chdir(name) == 0 ) {
+        // It exists, it's a directory, we've changed. Awesome.
+        return cwd;
+    }
+    // Error changing to the new directory
+    // The only thing we know how to handle is
+    // "directory does not exist"
+    if (errno != ENOENT) {
+        printf("Error changing to subdirectory %s: %s\n", name, strerror(errno));
+        return NULL;
+    }
+    // ok - we couldn't change because the directory
+    // doesn't exist. So we'll make it
+    if (mkdir(name, 0777) != 0) {
+        printf("Error creating subdirectory %s: %s\n", name, strerror(errno));
+        return NULL;
+    }
+    // Directory created, try changing to it again
+    if (chdir(name) != 0) {
+        printf("Could not change to new subdirectory %s: %s\n", name, strerror(errno));
+        return NULL;
+    }
+    return cwd;
+}
+
+static void get_resource(struct resource *res, void *parms)
+{
+    struct traverse_state state=*(struct traverse_state *)parms;
+    char *name = name_from_uri(res->uri);
+    int fulllength = strlen(name) + strlen(state.remote_path) + 2;
+    char full_name[fulllength];
+    snprintf(full_name, sizeof(full_name), "%s/%s", state.remote_path, name);
+
+    switch (res->type) {
+    case resr_normal:
+        execute_get(full_name, NULL);
+        break;
+    case resr_reference:
+        // TODO: what is a reference and do we care?
+        break;
+    case resr_collection:
+        if (state.recursive) {
+            char *cwd = change_or_create_dir(name);
+            if (cwd != NULL) {
+                execute_getall(full_name, "-r");
+                if (chdir(cwd) == -1){
+                    // This should be rare. We should probably stop everything?
+                    perror("Could not change back to parent directory: ");
+                }
+            }
+        }
+        break;
+    case resr_error:
+        printf(_("Error: %-30s %d %s\n"), name, res->error_status,
+              res->error_reason?res->error_reason:_("unknown"));
+        break;
+    default:
+        break;
+    }
+}
+
+static void execute_getall(const char *parm1, const char *parm2)
+{
+    struct traverse_state state = { 0, "." };
+    if ((parm1 != NULL && parm2 != NULL && strncmp(parm2, "-r", 2) == 0) ||
+       (parm2 == NULL && parm1 != NULL && strncmp(parm1, "-r", 2) == 0)) {
+        state.recursive=1;
+    }
+    if (parm1 != NULL && strncmp(parm1, "-r", 2) != 0){
+        state.remote_path=parm1;
+    }
+    process_ls(state.remote_path, 0, &get_resource, &state);
+}
 
 static void execute_get(const char *remote, const char *local)
 {
@@ -1304,6 +1392,8 @@ const struct command commands[] = {
       N_("put local [remote]"), N_("Upload local file") },
     { cmd_get, "get", true, 1, 2, parmscope_none, T2(execute_get),
       N_("get remote [local]"), N_("Download remote resource") },
+    { cmd_getall, "getall", true, 0, 2, parmscope_none, T2(execute_getall),
+      N_("getall [remote] [-r]"), N_("Download all remote resources") },
     C1M(mget, N_("mget remote..."), N_("Download many remote resources")),
     { cmd_mput, "mput", true, 1, CMD_VARY, parmscope_local, TV(multi_mput), 
       N_("mput local..."), N_("Upload many local files") },

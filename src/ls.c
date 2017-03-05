@@ -88,8 +88,23 @@ static int compare_resource(const struct resource *r1,
 	}
     }
 }
+char *name_from_uri(char *uri)
+{
+  char *name;
+  if (ne_path_has_trailing_slash(uri)) {
+	uri[strlen(uri)-1] = '\0';
+    }
+    name = strrchr(uri, '/');
+    if (name != NULL && strlen(name+1) > 0) {
+	name++;
+    } else {
+	name = uri;
+    }
 
-static void display_ls_line(struct resource *res)
+    return ne_path_unescape(name);
+}
+
+static void display_ls_line(struct resource *res, void *parm)
 {
     const char *restype;
     char exec_char, vcr_char, *name;
@@ -101,20 +116,9 @@ static void display_ls_line(struct resource *res)
     default:
 	restype = "???"; break;
     }
-    
-    if (ne_path_has_trailing_slash(res->uri)) {
-	res->uri[strlen(res->uri)-1] = '\0';
-    }
-    name = strrchr(res->uri, '/');
-    if (name != NULL && strlen(name+1) > 0) {
-	name++;
-    } else {
-	name = res->uri;
-    }
+    name = name_from_uri(res->uri);
 
-    name = ne_path_unescape(name);
-
-    if (res->type == resr_error) {
+   if (res->type == resr_error) {
 	printf(_("Error: %-30s %d %s\n"), name, res->error_status,
 	       res->error_reason?res->error_reason:_("unknown"));
     } else {
@@ -129,7 +133,9 @@ static void display_ls_line(struct resource *res)
     free(name);
 }
 
-void execute_ls(const char *remote)
+void process_ls(const char *remote, int output_list,
+    void (*processor)(struct resource *res, void *processor_params),
+    void *processor_params)
 {
     int ret;
     char *real_remote;
@@ -140,7 +146,9 @@ void execute_ls(const char *remote)
     } else {
 	real_remote = ne_strdup(session.uri.path);
     }
-    out_start(_("Listing collection"), real_remote);
+    if (output_list) {
+        out_start(_("Listing collection"), real_remote);
+    }
     ret = fetch_resource_list(session.sess, real_remote, 1, 0, &reslist);
     if (ret == NE_OK) {
 	/* Easy this, eh? */
@@ -151,7 +159,7 @@ void execute_ls(const char *remote)
 	    for (current = reslist; current!=NULL; current = next) {
 		next = current->next;
 		if (strlen(current->uri) > strlen(real_remote)) {
-		    display_ls_line(current);
+		    (*processor)(current, processor_params);
 		}
 		free_resource(current);
 	    }
@@ -160,6 +168,11 @@ void execute_ls(const char *remote)
 	out_result(ret);
     }
     free(real_remote);
+}
+
+void execute_ls(const char *remote)
+{
+  process_ls(remote, 1, display_ls_line, NULL);
 }
 
 static void results(void *userdata, 
